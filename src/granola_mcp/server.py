@@ -30,6 +30,40 @@ GRANOLA_ARGS_PREFIX = []
 # keychain prompts but avoids hanging indefinitely if one is left unattended.
 AUTH_REAUTH_TIMEOUT = 30
 
+# Minimum granola-cli version known to be compatible with this server.
+# Bump this when a new CLI release is required for correct behaviour.
+MIN_GRANOLA_CLI_VERSION = "0.1.2"
+
+
+# ---------------------------------------------------------------------------
+# CLI version check
+# ---------------------------------------------------------------------------
+
+def check_cli_version() -> None:
+    """Warn to stderr if the installed granola-cli is below MIN_GRANOLA_CLI_VERSION.
+
+    Called at server startup. Logs a warning but never blocks — a version we
+    can't parse is treated as compatible to avoid false positives.
+    """
+    rc, stdout, _ = _run_granola(["--version"])
+    if rc != 0:
+        return
+    parts = stdout.strip().split()
+    if len(parts) < 2:
+        return
+    try:
+        actual = tuple(int(x) for x in parts[1].split("."))
+        minimum = tuple(int(x) for x in MIN_GRANOLA_CLI_VERSION.split("."))
+    except ValueError:
+        return
+    if actual < minimum:
+        print(
+            f"granola-mcp warning: granola-cli {parts[1]} is below the minimum "
+            f"compatible version {MIN_GRANOLA_CLI_VERSION}. "
+            "Upgrade with: brew upgrade tmcinerney/tap/granola-cli",
+            file=sys.stderr,
+        )
+
 
 # ---------------------------------------------------------------------------
 # CLI runner
