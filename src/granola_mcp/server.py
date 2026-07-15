@@ -42,10 +42,10 @@ MIN_GRANOLA_CLI_VERSION = "0.1.3"
 # ---------------------------------------------------------------------------
 
 def check_cli_version() -> None:
-    """Warn to stderr if the installed granola-cli is below MIN_GRANOLA_CLI_VERSION.
+    """Reject a granola-cli version that cannot support this server's flags.
 
-    Called at server startup. Logs a warning but never blocks — a version we
-    can't parse is treated as compatible to avoid false positives.
+    A version we cannot parse is treated as compatible to avoid false
+    positives, but a known older version must fail before serving requests.
     """
     rc, stdout, _ = _run_granola(["--version"])
     if rc != 0:
@@ -59,11 +59,9 @@ def check_cli_version() -> None:
     except ValueError:
         return
     if actual < minimum:
-        print(
-            f"granola-mcp warning: granola-cli {parts[1]} is below the minimum "
-            f"compatible version {MIN_GRANOLA_CLI_VERSION}. "
-            "Upgrade with: brew upgrade tmcinerney/tap/granola-cli",
-            file=sys.stderr,
+        raise RuntimeError(
+            f"granola-mcp requires granola-cli {MIN_GRANOLA_CLI_VERSION} or newer; "
+            f"found {parts[1]}. Upgrade with: brew upgrade tmcinerney/tap/granola-cli"
         )
 
 

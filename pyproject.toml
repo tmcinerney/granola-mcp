@@ -1,6 +1,6 @@
 [project]
 name = "granola-mcp"
-version = "0.1.0"
+version = "0.1.1"
 description = "MCP server for Granola meeting notes — wraps granola-cli for use in sandboxed environments"
 requires-python = ">=3.12"
 dependencies = [
