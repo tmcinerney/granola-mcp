@@ -13,8 +13,10 @@ import json
 import os
 import subprocess
 import sys
+from datetime import date as Date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastmcp import FastMCP
 from pydantic import BaseModel, Field, ConfigDict
@@ -32,7 +34,7 @@ AUTH_REAUTH_TIMEOUT = 30
 
 # Minimum granola-cli version known to be compatible with this server.
 # Bump this when a new CLI release is required for correct behaviour.
-MIN_GRANOLA_CLI_VERSION = "0.1.2"
+MIN_GRANOLA_CLI_VERSION = "0.1.3"
 
 
 # ---------------------------------------------------------------------------
@@ -135,6 +137,80 @@ def _run_granola_text(args: list[str]) -> str:
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _normalize_bound(value: str, timezone_name: Optional[str], *, is_until: bool) -> str:
+    """Convert a date or RFC3339 value to a UTC CLI boundary.
+
+    Date-only upper bounds represent the start of the following local day, so
+    the CLI can apply a half-open [since, until) interval.
+    """
+    try:
+        local_tz = ZoneInfo(timezone_name) if timezone_name else datetime.now().astimezone().tzinfo
+    except ZoneInfoNotFoundError as exc:
+        raise ValueError(f"Unknown IANA timezone: {timezone_name}") from exc
+
+    try:
+        parsed_date = Date.fromisoformat(value)
+    except ValueError:
+        parsed_date = None
+
+    if parsed_date:
+        if is_until:
+            parsed_date += timedelta(days=1)
+        bound = datetime.combine(parsed_date, time.min, tzinfo=local_tz)
+    else:
+        try:
+            bound = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("Date filters must be YYYY-MM-DD or RFC3339 timestamps.") from exc
+        if bound.tzinfo is None:
+            raise ValueError("Timestamp filters must include a timezone offset.")
+
+    return bound.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _add_range_args(
+    args: list[str],
+    prefix: str,
+    since: Optional[str],
+    until: Optional[str],
+    timezone_name: Optional[str],
+) -> None:
+    normalized_since = None
+    if since:
+        normalized_since = _normalize_bound(since, timezone_name, is_until=False)
+        args += [f"--{prefix}-since", normalized_since]
+    if until:
+        normalized_until = _normalize_bound(until, timezone_name, is_until=True)
+        if normalized_since and normalized_since >= normalized_until:
+            raise ValueError(f"{prefix}_since must be before {prefix}_until.")
+        args += [f"--{prefix}-until", normalized_until]
+
+
+def _build_list_args(params: "ListMeetingsInput") -> list[str]:
+    """Build CLI arguments without relying on optional calendar metadata."""
+    args = ["meeting", "list", "-o", "json", "--limit", str(params.limit)]
+    has_created_range = any((params.created_since, params.created_until))
+    has_legacy_range = any((params.since, params.until))
+    if params.date and (has_created_range or has_legacy_range):
+        raise ValueError("date cannot be combined with since, until, or created_* filters.")
+    if has_created_range and has_legacy_range:
+        raise ValueError("Use either since/until or created_since/created_until, not both.")
+
+    if params.date:
+        _add_range_args(args, "created", params.date, params.date, params.timezone)
+    else:
+        _add_range_args(
+            args,
+            "created",
+            params.created_since or params.since,
+            params.created_until or params.until,
+            params.timezone,
+        )
+    _add_range_args(args, "updated", params.updated_since, params.updated_until, params.timezone)
+    if params.search:
+        args += ["--search", params.search]
+    return args
+
 def _format_meeting_markdown(m: dict) -> str:
     """Render a single meeting as a markdown summary block."""
     title = m.get("title") or "(Untitled)"
@@ -207,6 +283,26 @@ class ListMeetingsInput(BaseModel):
     until: Optional[str] = Field(
         default=None,
         description="Filter meetings up to this date inclusive. ISO format: YYYY-MM-DD.",
+    )
+    created_since: Optional[str] = Field(
+        default=None,
+        description="Filter recordings created at or after this date or RFC3339 timestamp.",
+    )
+    created_until: Optional[str] = Field(
+        default=None,
+        description="Filter recordings created through this date or before this RFC3339 timestamp.",
+    )
+    updated_since: Optional[str] = Field(
+        default=None,
+        description="Filter documents updated at or after this date or RFC3339 timestamp.",
+    )
+    updated_until: Optional[str] = Field(
+        default=None,
+        description="Filter documents updated through this date or before this RFC3339 timestamp.",
+    )
+    timezone: Optional[str] = Field(
+        default=None,
+        description="IANA timezone for date-only filters (for example, America/Los_Angeles). Defaults to the server timezone.",
     )
     search: Optional[str] = Field(
         default=None,
@@ -293,16 +389,7 @@ def create_server() -> FastMCP:
             str: JSON array of meeting objects, or markdown summary list.
         """
         try:
-            args = ["meeting", "list", "-o", "json", "--limit", str(params.limit)]
-            if params.date:
-                args += ["--since", params.date, "--until", params.date]
-            elif params.since or params.until:
-                if params.since:
-                    args += ["--since", params.since]
-                if params.until:
-                    args += ["--until", params.until]
-            if params.search:
-                args += ["--search", params.search]
+            args = _build_list_args(params)
 
             meetings = _run_granola_json(args)
 

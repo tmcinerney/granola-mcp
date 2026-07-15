@@ -8,7 +8,7 @@ MCP server for [Granola](https://granola.so) — exposes meeting notes, AI summa
 
 | Tool | Description |
 |---|---|
-| `granola_list_meetings` | List meetings, optionally filtered by date range or title search |
+| `granola_list_meetings` | List meetings, optionally filtered by creation/update time range or title search |
 | `granola_get_notes` | Fetch AI-enhanced notes for a meeting |
 | `granola_get_transcript` | Fetch the full transcript with speaker labels |
 
