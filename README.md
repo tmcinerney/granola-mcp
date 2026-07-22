@@ -10,7 +10,8 @@ MCP server for [Granola](https://granola.so) — exposes meeting notes, AI summa
 |---|---|
 | `granola_list_meetings` | List meetings, optionally filtered by creation/update time range or title search |
 | `granola_get_notes` | Fetch AI-enhanced notes for a meeting |
-| `granola_get_transcript` | Fetch the full transcript with speaker labels |
+| `granola_get_transcript` | Fetch the full transcript with raw audio channels and Granola-supplied names when available |
+| `granola_get_meeting_context` | Fetch safe meeting context plus conservative channel/speaker-attribution summary |
 
 ## Prerequisites
 
@@ -20,6 +21,11 @@ MCP server for [Granola](https://granola.so) — exposes meeting notes, AI summa
 brew install tmcinerney/tap/granola-cli
 granola auth login
 ```
+
+`granola-mcp` 0.2.0 requires `granola-cli` 0.2.0 or later. Transcript source
+labels (`microphone`, `system`) identify capture channels, not people. The MCP
+server only renders individual names that Granola includes in raw transcript
+segments, and never maps calendar attendees to speakers.
 
 **[uv](https://docs.astral.sh/uv/)** installed:
 

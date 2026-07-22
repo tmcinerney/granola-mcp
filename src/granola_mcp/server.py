@@ -34,7 +34,7 @@ AUTH_REAUTH_TIMEOUT = 30
 
 # Minimum granola-cli version known to be compatible with this server.
 # Bump this when a new CLI release is required for correct behaviour.
-MIN_GRANOLA_CLI_VERSION = "0.1.3"
+MIN_GRANOLA_CLI_VERSION = "0.2.0"
 
 
 # ---------------------------------------------------------------------------
@@ -238,15 +238,35 @@ def _format_meeting_markdown(m: dict) -> str:
     return "\n".join(lines)
 
 
+def _detected_speaker_name(utterance: dict) -> Optional[str]:
+    """Return only a name supplied in Granola's raw transcript payload.
+
+    Transcript `source` identifies an audio channel, not necessarily a person.
+    In particular, `system` can contain several participants, so this helper
+    intentionally never infers names from meeting metadata.
+    """
+    detected = utterance.get("detectedSpeaker")
+    if isinstance(detected, dict):
+        name = detected.get("participantName")
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+    name = utterance.get("detected_speaker_name")
+    if isinstance(name, str) and name.strip():
+        return name.strip()
+    return None
+
+
 def _format_transcript_markdown(utterances: list[dict]) -> str:
-    """Format transcript utterances as readable markdown."""
+    """Format transcript utterances without guessing speaker identity."""
     lines = ["# Transcript", ""]
     for u in utterances:
-        speaker = "**You**" if u.get("source") == "microphone" else "**Participant**"
+        source = u.get("source") or "unknown"
+        name = _detected_speaker_name(u)
+        speaker = f"**{name}**" if name else f"**{source} audio**"
         text = u.get("text", "").strip()
         ts = u.get("start_timestamp", "")
         if text:
-            lines.append(f"{speaker} _{ts}_: {text}")
+            lines.append(f"{speaker} _(source: {source}; {ts})_: {text}")
             lines.append("")
     return "\n".join(lines)
 
@@ -342,6 +362,20 @@ class GetTranscriptInput(BaseModel):
     )
 
 
+class GetMeetingContextInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    meeting_id: str = Field(
+        ...,
+        description="Granola meeting ID (from granola_list_meetings).",
+        min_length=1,
+    )
+    response_format: str = Field(
+        default="json",
+        description="Output format: 'json' for the schema-v1 context object, 'markdown' for a compact summary.",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Server factory
 # ---------------------------------------------------------------------------
@@ -353,7 +387,8 @@ def create_server() -> FastMCP:
             "Access Granola meeting notes, AI-enhanced summaries, and transcripts. "
             "Use granola_list_meetings to find meetings by date, "
             "granola_get_notes to retrieve AI-enhanced notes for a meeting, "
-            "and granola_get_transcript to retrieve the full transcript."
+            "granola_get_transcript to retrieve the full transcript, and "
+            "granola_get_meeting_context for conservative speaker-attribution context."
         ),
     )
 
@@ -457,10 +492,10 @@ def create_server() -> FastMCP:
     async def granola_get_transcript(params: GetTranscriptInput) -> str:
         """Get the full transcript for a Granola meeting.
 
-        Returns utterances with speaker labels (You / Participant) and timestamps.
-        Note: Granola desktop records two audio channels only — microphone (you)
-        and system audio (all other participants) — so individual speaker
-        diarization is not available.
+        Returns utterances with timestamps and Granola's raw audio channels.
+        Markdown includes a name only where Granola supplied one in the raw
+        segment. The microphone and system channels are not inferred to be a
+        particular person.
 
         Args:
             params (GetTranscriptInput):
@@ -483,6 +518,42 @@ def create_server() -> FastMCP:
 
             return json.dumps(utterances, indent=2)
 
+        except Exception as e:
+            return _handle_error(e)
+
+    @mcp.tool(
+        name="granola_get_meeting_context",
+        annotations={
+            "title": "Get Granola Meeting Attribution Context",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        },
+    )
+    async def granola_get_meeting_context(params: GetMeetingContextInput) -> str:
+        """Get a compact, conservative context record for a Granola meeting.
+
+        The result includes safe document context, transcript channel counts,
+        and only speaker names supplied by Granola. Calendar participants are
+        included as meeting context but are never inferred as speakers.
+        """
+        try:
+            context = _run_granola_json(
+                ["meeting", "context", params.meeting_id, "-o", "json"]
+            )
+            if params.response_format == "markdown":
+                document = context.get("document") or {}
+                attribution = context.get("attribution") or {}
+                lines = [f"# {document.get('title') or '(Untitled meeting)'}", ""]
+                for channel in attribution.get("channels") or []:
+                    source = channel.get("source") or "unknown"
+                    count = channel.get("segment_count", 0)
+                    names = channel.get("detected_speaker_names") or []
+                    suffix = f"; Granola-detected speakers: {', '.join(names)}" if names else ""
+                    lines.append(f"- `{source}`: {count} segments{suffix}")
+                return "\n".join(lines)
+            return json.dumps(context, indent=2)
         except Exception as e:
             return _handle_error(e)
 
